@@ -1,0 +1,35 @@
+import torch
+
+class Trainer:
+    def __init__(self, model, optimizer, scheduler, dataloaders, device):
+        self.model = model
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.dataloaders = dataloaders
+        self.device = device
+
+    def train(self, epochs):
+        for epoch in range(epochs):
+            self.model.train()
+            for x, y in self.dataloaders["train"]:
+                x, y = x.to(self.device), y.to(self.device)
+
+                out = self.model(x)
+                loss = torch.nn.functional.cross_entropy(out, y)
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+
+    def evaluate(self):
+        self.model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for x, y in self.dataloaders["test"]:
+                x, y = x.to(self.device), y.to(self.device)
+                out = self.model(x)
+                pred = out.argmax(1)
+                correct += (pred == y).sum().item()
+                total += y.size(0)
+        return correct / total
