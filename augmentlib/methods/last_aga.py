@@ -5,16 +5,10 @@ import torch
 from PIL import Image
 from typing import Optional
 
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    AutoProcessor,
-    AutoModelForZeroShotObjectDetection,
-    SamModel,
-    SamProcessor
-)
-
+from ultralytics import YOLO
+from segment_anything import sam_model_registry, SamPredictor
 from diffusers import StableDiffusionPipeline
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from ..core.base import BaseAugmentationMethod
 from ..core.registry import register_augmentation
@@ -101,25 +95,18 @@ Scene: {base}
 class AGAAugmentor(BaseAugmentationMethod):
     """
     AGA: Object extraction + generative background + compositing.
-    (Improved mask via GroundingDINO + SAM)
     """
 
     def __init__(self, class_name: str):
         self.class_name = class_name
 
-        # === Grounding DINO ===
-        self.gdino_processor = AutoProcessor.from_pretrained(
-            "IDEA-Research/grounding-dino-base"
-        )
-        self.gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            "IDEA-Research/grounding-dino-base"
-        ).to(DEVICE)
+        # === Models ===
+        self.yolo = YOLO("yolov8n.pt")
 
-        # === SAM ===
-        self.sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
-        self.sam_model = SamModel.from_pretrained("facebook/sam-vit-base").to(DEVICE)
+        sam = sam_model_registry["vit_b"](checkpoint="sam_vit_b_01ec64.pth")
+        sam.to(device=DEVICE)
+        self.predictor = SamPredictor(sam)
 
-        # === Stable Diffusion ===
         self.pipe = StableDiffusionPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-5",
             torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
@@ -130,120 +117,41 @@ class AGAAugmentor(BaseAugmentationMethod):
 
         self.prompt_gen = AGAPromptGeneratorPhi3()
 
-        self.box_threshold = 0.2
-        self.text_threshold = 0.25
-        self.area_threshold = 0.8
-
     def prepare(self, dataset):
+        """No precomputation needed."""
         pass
 
     # -------------------------
-    # NEW MASK PIPELINE
+    # Core steps
     # -------------------------
     def detect_and_mask(self, image_np):
-        image_rgb = image_np
-        pil_image = Image.fromarray(image_rgb)
+        results = self.yolo(image_np)
 
-        H, W = image_rgb.shape[:2]
+        target_id = None
+        for k, v in self.yolo.names.items():
+            if v.lower() == self.class_name.lower():
+                target_id = k
 
-        # === Grounding DINO ===
-        inputs = self.gdino_processor(
-            images=pil_image,
-            text=self.class_name,
-            return_tensors="pt"
-        ).to(DEVICE)
-
-        with torch.no_grad():
-            outputs = self.gdino_model(**inputs)
-
-        target_sizes = torch.tensor([pil_image.size[::-1]]).to(DEVICE)
-
-        results = self.gdino_processor.post_process_grounded_object_detection(
-            outputs,
-            inputs.input_ids,
-            threshold=self.box_threshold,
-            text_threshold=self.text_threshold,
-            target_sizes=target_sizes
-        )[0]
-
-        boxes = results["boxes"]
-
-        if len(boxes) == 0:
+        if target_id is None:
             return None, None
 
-        # === SAM prep ===
-        sam_inputs = self.sam_processor(pil_image, return_tensors="pt").to(DEVICE)
-        resized_h, resized_w = sam_inputs.pixel_values.shape[-2:]
-        image_embeddings = self.sam_model.get_image_embeddings(
-            sam_inputs.pixel_values
+        for box in results[0].boxes:
+            if int(box.cls[0]) == target_id:
+                bbox = box.xyxy[0].cpu().numpy()
+                break
+        else:
+            return None, None
+
+        x1, y1, x2, y2 = bbox.astype(int)
+
+        self.predictor.set_image(image_np)
+        masks, _, _ = self.predictor.predict(
+            box=np.array([x1, y1, x2, y2]),
+            multimask_output=False
         )
 
-        combined_mask = np.zeros((H, W), dtype=np.uint8)
-        image_area = H * W
+        return image_np, masks[0].astype(np.uint8)
 
-        for box in boxes.tolist():
-            x1, y1, x2, y2 = box
-
-            w, h = x2 - x1, y2 - y1
-            if w <= 0 or h <= 0:
-                continue
-
-            if (w * h) / image_area > self.area_threshold:
-                continue
-
-            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-
-            point_coords = [[cx, cy]] + [
-                [x1, y1], [x2, y1], [x1, y2], [x2, y2]
-            ]
-            point_labels = [1, 0, 0, 0, 0]
-
-            prompt = self.sam_processor(
-                pil_image,
-                input_boxes=[[box]],
-                input_points=[point_coords],
-                input_labels=[point_labels],
-                return_tensors="pt"
-            ).to(DEVICE)
-
-            prompt.pop("pixel_values", None)
-
-            with torch.no_grad():
-                outputs = self.sam_model(
-                    image_embeddings=image_embeddings,
-                    **prompt,
-                    multimask_output=True
-                )
-
-            if outputs.pred_masks is None or outputs.iou_scores is None:
-                continue
-
-            best_idx = outputs.iou_scores[0].argmax().item()
-            mask_to_use = outputs.pred_masks[:, best_idx:best_idx+1]
-
-            masks = self.sam_processor.image_processor.post_process_masks(
-                mask_to_use,
-                original_sizes=[[H, W]],
-                reshaped_input_sizes=[[resized_h, resized_w]]
-            )
-
-            if not masks or masks[0].shape[0] == 0:
-                continue
-
-            mask_np = masks[0][0, 0].cpu().numpy().astype(np.uint8)
-
-            combined_mask = np.logical_or(combined_mask, mask_np)
-
-        combined_mask = combined_mask.astype(np.uint8)
-
-        if combined_mask.sum() == 0:
-            return None, None
-
-        return image_np, combined_mask
-
-    # -------------------------
-    # Rest unchanged
-    # -------------------------
     def extract_object(self, image, mask):
         obj = image.copy()
         obj[mask == 0] = 0
@@ -305,13 +213,16 @@ class AGAAugmentor(BaseAugmentationMethod):
 
         return background
 
+    # -------------------------
+    # MAIN API
+    # -------------------------
     def augment(self, image: Image.Image) -> Optional[Image.Image]:
         image_np = np.array(image)
 
         image_np, mask = self.detect_and_mask(image_np)
 
         if mask is None:
-            return None
+            return None  # важно для пайплайна
 
         prompt = self.prompt_gen.generate_prompt(self.class_name)
 
