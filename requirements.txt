@@ -5,7 +5,7 @@ torchaudio
 transformers
 diffusers
 accelerate
-opencv-python
+opencv-python-headless
 pillow
 numpy
 tqdm
@@ -13,3 +13,5 @@ matplotlib
 kagglehub
 sam2
 scipy
+timm
+comet_ml
