@@ -1,0 +1,90 @@
+# ================ Python ================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ================ Models & data ================
+# Downloaded Hugging Face / Transformers models
+cache/
+models/
+pretrained/
+
+# SAM2 checkpoints and model files (large binary)
+*.pth
+*.pt
+checkpoints/
+sam2/
+
+# Stable Diffusion / Diffusers cache
+diffusers_cache/
+hf_home/
+.hf_cache/
+
+# Augmented datasets (generated, not committed)
+augmented_*/
+offline_output/
+data/augmented/
+
+# Kaggle datasets (downloaded via kagglehub)
+kaggle_datasets/
+kagglehub/
+
+# ================ Logs & temporary files ================
+*.log
+tmp/
+temp/
+lightning_logs/
+wandb/
+
+# ================ Docker / environment ================
+Dockerfile
+.env
+*.env
+
+# ================ System ================
+Thumbs.db
+
+# ================ Generated images ================
+# Augmented images produced by OfflineAugmentedDatasetGenerator
+*_aug_*.jpg
+*_aug_*.jpeg
+
+# Alternatively, ignore ALL JPEGs (uncomment if you don't store original images in Git)
+# *.jpg
+# *.jpeg
+
+# If you exclude all JPEGs but want to keep original dataset images,
+# explicitly allow them (adjust path):
+# !data/one_class/**/*.jpg
+
+# Whole output directories
+data/
+aga/
+genmix/
+output/
