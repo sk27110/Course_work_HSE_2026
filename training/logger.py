@@ -2,22 +2,18 @@
 import os
 import csv
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 class LocalLogger:
-    """
-    Сохраняет метрики эпох в CSV и ведёт текстовый .log файл с конфигом и событиями.
-    """
     def __init__(self, log_dir: str, experiment_name: str):
         self.experiment_dir = os.path.join(log_dir, experiment_name)
         os.makedirs(self.experiment_dir, exist_ok=True)
 
-        # CSV для числовых метрик эпох
-        self.metrics_path = os.path.join(self.experiment_dir, "metrics.csv")
-        self._init_csv()
+        # Имена файлов с префиксом эксперимента
+        self.metrics_path = os.path.join(self.experiment_dir, f"{experiment_name}_metrics.csv")
+        self.log_file = os.path.join(self.experiment_dir, f"{experiment_name}.log")
 
-        # Текстовый лог (experiment.log)
-        self.log_file = os.path.join(self.experiment_dir, "experiment.log")
+        self._init_csv()
         self._init_log_file()
 
     def _init_csv(self):
@@ -32,7 +28,6 @@ class LocalLogger:
             f.write("=" * 50 + "\n")
 
     def log_config(self, config: Dict[str, Any]):
-        """Записывает конфигурацию в текстовый лог-файл."""
         with open(self.log_file, 'a') as f:
             f.write("Configuration:\n")
             for key, value in config.items():
@@ -40,7 +35,6 @@ class LocalLogger:
             f.write("-" * 50 + "\n")
 
     def log_message(self, message: str):
-        """Добавляет произвольное сообщение с временной меткой."""
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with open(self.log_file, 'a') as f:
             f.write(f"[{timestamp}] {message}\n")
@@ -48,20 +42,19 @@ class LocalLogger:
     def log_epoch(self, epoch: int,
                   train_loss: float, train_acc: float, train_top5: float,
                   val_loss: float, val_acc: float, val_top5: float):
-        # Запись в CSV
+        # CSV
         with open(self.metrics_path, mode='a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([epoch, train_loss, train_acc, train_top5,
                              val_loss, val_acc, val_top5])
-        # Краткое сообщение в текстовый лог
+        # Текстовый лог
         msg = (f"Epoch {epoch:3d} | "
                f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} Top5: {train_top5:.4f} | "
                f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} Top5: {val_top5:.4f}")
         self.log_message(msg)
 
-
+# CometLogger – без изменений (приводится для полноты)
 class CometLogger:
-    """Логгер для Comet ML: параметры эксперимента, метрики по батчам и эпохам."""
     def __init__(self, project_name: str, experiment_name: str, api_key: str = None,
                  workspace: str = None, disabled: bool = False):
         self.disabled = disabled
@@ -84,9 +77,8 @@ class CometLogger:
         if self.experiment is not None:
             self.experiment.log_metric(name, value, step=step)
 
-    def log_epoch_metrics(self, epoch: int, train_loss: float, train_acc: float,
-                          train_top5: float, val_loss: float, val_acc: float,
-                          val_top5: float):
+    def log_epoch_metrics(self, epoch, train_loss, train_acc, train_top5,
+                          val_loss, val_acc, val_top5):
         if self.experiment is not None:
             self.experiment.log_metrics({
                 "train_loss": train_loss,
@@ -97,7 +89,7 @@ class CometLogger:
                 "val_top5_accuracy": val_top5,
             }, epoch=epoch)
 
-    def log_batch_loss(self, phase: str, batch_idx: int, epoch: int, loss: float):
+    def log_batch_loss(self, phase, batch_idx, epoch, loss):
         if self.experiment is not None:
             step = epoch * 10000 + batch_idx
             self.experiment.log_metric(f"{phase}_batch_loss", loss, step=step)

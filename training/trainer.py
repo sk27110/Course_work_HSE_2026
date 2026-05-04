@@ -38,6 +38,7 @@ class Trainer:
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
+        self.experiment_name = experiment_name
         self.val_loader = val_loader
         self.criterion = criterion
         self.optimizer = optimizer
@@ -146,7 +147,7 @@ class Trainer:
 
             if self.save_best and val_acc > self.best_val_acc:
                 self.best_val_acc = val_acc
-                checkpoint_path = os.path.join(self.checkpoint_dir, "best_model.pth")
+                checkpoint_path = os.path.join(self.checkpoint_dir, f"{self.experiment_name}_best.pth")
                 torch.save(self.model.state_dict(), checkpoint_path)
                 self.local_logger.log_message(f"Epoch {epoch}: new best model saved (val_acc {val_acc:.4f})")
                 print(f"Epoch {epoch}: new best model saved with val_acc {val_acc:.4f}")

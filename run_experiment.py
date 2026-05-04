@@ -1,4 +1,5 @@
 # run_experiment.py
+import os
 import yaml
 import argparse
 import torch
@@ -130,8 +131,12 @@ def main():
         comet_logger=comet_logger,
         seed=seed,
         log_batch_loss=log_cfg.get('log_batch_loss', False),
-        config=config   # передаём весь конфиг для записи в experiment.log
+        config=config
     )
+
+    # Сохраняем копию конфига в папку эксперимента
+    import shutil
+    shutil.copy(args.config, os.path.join(trainer.local_logger.experiment_dir, f"{experiment_name}_config.yaml"))
 
     trainer.fit()
 
