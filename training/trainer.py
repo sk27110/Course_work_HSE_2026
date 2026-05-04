@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from typing import Optional
+from typing import Optional, Dict, Any
 from .logger import LocalLogger, CometLogger
 
 def set_seed(seed: int):
@@ -18,10 +18,6 @@ def set_seed(seed: int):
     torch.backends.cudnn.benchmark = False
 
 class Trainer:
-    """
-    Универсальный тренер для дообучения моделей.
-    Поддерживает локальное и Comet ML логирование, автоматическое сохранение лучшей модели.
-    """
     def __init__(
         self,
         model: nn.Module,
@@ -37,7 +33,8 @@ class Trainer:
         comet_logger: Optional[CometLogger] = None,
         seed: int = 42,
         save_best: bool = True,
-        log_batch_loss: bool = True,   # логировать ли потери каждого батча в Comet
+        log_batch_loss: bool = True,
+        config: Optional[Dict[str, Any]] = None   # новый параметр
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -48,20 +45,19 @@ class Trainer:
         self.device = device
         self.num_epochs = num_epochs
         self.log_batch_loss = log_batch_loss
+        self.config = config
 
-        # Инициализация логгеров
+        # Логгеры
         self.local_logger = LocalLogger(log_dir, experiment_name)
         self.comet_logger = comet_logger
 
-        # Папка для сохранения моделей
+        # Папка для чекпоинтов
         self.checkpoint_dir = os.path.join(log_dir, experiment_name, "checkpoints")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-        # Для отслеживания лучшей модели
         self.best_val_acc = 0.0
         self.save_best = save_best
 
-        # Детерминированность
         set_seed(seed)
 
     def train_epoch(self, epoch: int) -> tuple:
@@ -83,13 +79,10 @@ class Trainer:
             _, predicted = outputs.topk(5, dim=1)
             total += targets.size(0)
             correct1 += (predicted[:, 0] == targets).sum().item()
-            # top-5: любое из 5 предсказаний совпадает с истинным классом
             correct5 += (predicted == targets.view(-1, 1)).sum().item()
 
             if self.log_batch_loss and self.comet_logger is not None:
-                self.comet_logger.log_batch_loss(
-                    "train", batch_idx, epoch, loss.item()
-                )
+                self.comet_logger.log_batch_loss("train", batch_idx, epoch, loss.item())
 
         train_loss = running_loss / total
         train_acc = correct1 / total
@@ -116,9 +109,7 @@ class Trainer:
             correct5 += (predicted == targets.view(-1, 1)).sum().item()
 
             if self.log_batch_loss and self.comet_logger is not None:
-                self.comet_logger.log_batch_loss(
-                    "val", batch_idx, epoch, loss.item()
-                )
+                self.comet_logger.log_batch_loss("val", batch_idx, epoch, loss.item())
 
         val_loss = running_loss / total
         val_acc = correct1 / total
@@ -126,36 +117,38 @@ class Trainer:
         return val_loss, val_acc, val_top5
 
     def fit(self):
+        # Логируем конфиг
+        if self.config is not None:
+            self.local_logger.log_config(self.config)
+        self.local_logger.log_message("Training started.")
         print(f"Training started for {self.num_epochs} epochs on device {self.device}")
+
         for epoch in range(1, self.num_epochs + 1):
             train_loss, train_acc, train_top5 = self.train_epoch(epoch)
             val_loss, val_acc, val_top5 = self.validate_epoch(epoch)
 
-            # Логирование в локальный файл
             self.local_logger.log_epoch(
                 epoch, train_loss, train_acc, train_top5,
                 val_loss, val_acc, val_top5
             )
 
-            # Логирование в Comet
             if self.comet_logger is not None:
                 self.comet_logger.log_epoch_metrics(
                     epoch, train_loss, train_acc, train_top5,
                     val_loss, val_acc, val_top5
                 )
 
-            # Шаг планировщика (если есть)
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(val_loss)
                 else:
                     self.scheduler.step()
 
-            # Сохранение лучшей модели
             if self.save_best and val_acc > self.best_val_acc:
                 self.best_val_acc = val_acc
                 checkpoint_path = os.path.join(self.checkpoint_dir, "best_model.pth")
                 torch.save(self.model.state_dict(), checkpoint_path)
+                self.local_logger.log_message(f"Epoch {epoch}: new best model saved (val_acc {val_acc:.4f})")
                 print(f"Epoch {epoch}: new best model saved with val_acc {val_acc:.4f}")
 
             print(
@@ -164,7 +157,7 @@ class Trainer:
                 f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} Top5: {val_top5:.4f}"
             )
 
-        # Завершение Comet эксперимента
         if self.comet_logger is not None:
             self.comet_logger.end()
+        self.local_logger.log_message("Training finished.")
         print("Training finished.")

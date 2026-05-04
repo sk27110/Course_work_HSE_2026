@@ -168,18 +168,49 @@ class GenMixAugmentor(BaseAugmentationMethod):
         threshold = self.mu - 2 * self.sigma
         return sim.item() >= threshold
 
-    def _create_mask(self, h, w):
-        mask = torch.zeros((h, w))
-        bw = self.blend_width
+    def _create_mask(self, h: int, w: int, mask_type: str = 'vertical', flip: bool = False) -> torch.Tensor:
+        """
+        Создаёт маску для бесшовного смешивания (Seamless Concatenation).
 
-        mask[:, :w//2 - bw] = 0
-        mask[:, w//2 + bw:] = 1
+        Параметры:
+            h, w    – размеры изображения (высота, ширина).
+            mask_type – 'vertical' (левая/правая части) или 'horizontal' (верх/низ).
+            flip    – если True, маска инвертируется (меняются местами источник и генерация).
 
-        blend = torch.linspace(0, 1, 2 * bw)
-        mask[:, w//2 - bw : w//2 + bw] = blend.unsqueeze(0)
+        Возвращает:
+            Тензор маски формы (1, h, w) на self.device.
+        """
+        bw = self.blend_width                     # ширина градиентного перехода
+        mask = torch.zeros((h, w), device=self.device)
 
-        return mask.unsqueeze(0).to(self.device)
+        if mask_type == 'vertical':
+            # Левая часть = 0 (оригинал), правая = 1 (генерация)
+            mid = w // 2
+            mask[:, :mid - bw] = 0.0
+            mask[:, mid + bw:] = 1.0
 
+            # Градиентная полоса перехода
+            blend = torch.linspace(0.0, 1.0, 2 * bw, device=self.device)
+            mask[:, mid - bw : mid + bw] = blend.unsqueeze(0)   # (2*bw) -> (1, 2*bw)
+
+        elif mask_type == 'horizontal':
+            # Верх = 0, низ = 1
+            mid = h // 2
+            mask[:mid - bw, :] = 0.0
+            mask[mid + bw:, :] = 1.0
+
+            blend = torch.linspace(0.0, 1.0, 2 * bw, device=self.device)
+            mask[mid - bw : mid + bw, :] = blend.unsqueeze(1)   # (2*bw) -> (2*bw, 1)
+
+        else:
+            raise ValueError(f"Unknown mask_type: {mask_type}. Choose 'vertical' or 'horizontal'.")
+
+        # Инверсия маски для перестановки частей (flipped version)
+        if flip:
+            mask = 1.0 - mask
+
+        # Добавляем размерность канала для удобного поэлементного умножения
+        return mask.unsqueeze(0)   # (1, h, w)
     # -----------------------------
     # Главный метод augment — теперь с ленивой загрузкой
     # -----------------------------
@@ -209,7 +240,11 @@ class GenMixAugmentor(BaseAugmentationMethod):
             # Проверка верности через DINOv2
             if self.is_faithful(img_t, gen_t):
                 # Успех! Идём дальше — делаем hybrid + fractal
-                mask = self._create_mask(h, w)
+                # Случайный выбор из 4 вариантов согласно статье
+                mask_type = random.choice(['vertical', 'horizontal'])
+                flip = random.choice([True, False])
+                mask = self._create_mask(h, w, mask_type=mask_type, flip=flip)
+                
                 hybrid = gen_t * mask + img_t * (1 - mask)
 
                 # Ленивая загрузка фрактала
