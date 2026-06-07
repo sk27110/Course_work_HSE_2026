@@ -15,6 +15,8 @@ from training.logger import CometLogger
 
 from local_datasets.oxford_flower102 import OxfordFlowers102
 from local_datasets.dtd import DTD
+from local_datasets.mini_imagenet import MiniImageNet
+
 
 from training.dataset import MixedAugDataset
 
@@ -139,10 +141,22 @@ def create_base_dataset(data_cfg: dict):
             partition=data_cfg.get("partition", 1)
         )
 
+    elif dataset_name == "miniimagenet":
+        dataset = MiniImageNet(
+            root=root,
+            transform=None,
+            download=download,
+            url=data_cfg.get("url", None),
+            archive_name=data_cfg.get("archive_name", None),
+            remove_archive=data_cfg.get("remove_archive", False)
+        )
+
     else:
         raise ValueError(f"Unknown dataset_name: {dataset_name}")
 
     return dataset
+
+
 
 
 
