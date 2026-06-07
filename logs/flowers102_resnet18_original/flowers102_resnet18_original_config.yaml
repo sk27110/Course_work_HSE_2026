@@ -1,0 +1,40 @@
+experiment_name: flowers102_resnet18_original
+seed: 42
+device: cuda
+
+data:
+  dataset_name: flowers102
+  train_dataset_type: original
+
+  root: data/flowers102
+  download: true
+
+  num_classes: 102
+  batch_size: 32
+  num_workers: 4
+
+model:
+  name: resnet18
+  pretrained: true
+
+training:
+  num_epochs: 50
+  optimizer: sgd
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+
+  scheduler:
+    type: step_lr
+    step_size: 20
+    gamma: 0.1
+
+logging:
+  log_dir: logs
+  log_batch_loss: false
+
+  comet:
+    project_name: OF102-augmentation-comparison
+    workspace: null
+    api_key_env: COMET_API_KEY
+    disabled: true

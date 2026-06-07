@@ -1,221 +1,274 @@
 # run_experiment.py
 
-import os
-import yaml
 import argparse
+import os
+import random
 import shutil
+from typing import Dict, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
+import yaml
 from torch.utils.data import DataLoader
 
+from data_utils.dataset_factory import create_datasets
+from training.logger import CometLogger
 from training.models import get_resnet18, get_vit_tiny
 from training.trainer import Trainer, set_seed
-from training.logger import CometLogger
-
-from local_datasets.oxford_flower102 import OxfordFlowers102
-from local_datasets.dtd import DTD
-from local_datasets.mini_imagenet import MiniImageNet
 
 
-from training.dataset import MixedAugDataset
-
-from utils.transforms import train_transform, val_test_transform
-
-
-def load_config(config_path: str) -> dict:
+def load_config(config_path: str) -> Dict:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def create_optimizer(model: nn.Module, train_cfg: dict) -> torch.optim.Optimizer:
-    opt_name = train_cfg["optimizer"]
-    lr = train_cfg["learning_rate"]
-    wd = train_cfg.get("weight_decay", 0)
-
-    if opt_name == "sgd":
-        momentum = train_cfg.get("momentum", 0.9)
-        return torch.optim.SGD(
-            model.parameters(),
-            lr=lr,
-            momentum=momentum,
-            weight_decay=wd
-        )
-
-    elif opt_name == "adam":
-        return torch.optim.Adam(
-            model.parameters(),
-            lr=lr,
-            weight_decay=wd
-        )
-
-    elif opt_name == "adamw":
-        return torch.optim.AdamW(
-            model.parameters(),
-            lr=lr,
-            weight_decay=wd
-        )
-
-    else:
-        raise ValueError(f"Unsupported optimizer: {opt_name}")
-
-
-def create_scheduler(optimizer: torch.optim.Optimizer, train_cfg: dict):
-    sched_cfg = train_cfg.get("scheduler", {})
-    sched_type = sched_cfg.get("type", "none")
-
-    if sched_type == "step_lr":
-        step_size = sched_cfg.get("step_size", 30)
-        gamma = sched_cfg.get("gamma", 0.1)
-
-        return torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=step_size,
-            gamma=gamma
-        )
-
-    elif sched_type == "reduce_on_plateau":
-        patience = sched_cfg.get("patience", 5)
-        factor = sched_cfg.get("factor", 0.5)
-
-        return torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            patience=patience,
-            factor=factor
-        )
-
-    elif sched_type == "cosine":
-        num_epochs = train_cfg["num_epochs"]
-
-        return torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=num_epochs
-        )
-
-    elif sched_type == "none":
-        return None
-
-    else:
-        raise ValueError(f"Unsupported scheduler: {sched_type}")
-
-
-def create_model(model_cfg: dict, num_classes: int) -> nn.Module:
-    model_name = model_cfg["name"]
-    pretrained = model_cfg.get("pretrained", False)
+def create_model(model_cfg: Dict, num_classes: int) -> nn.Module:
+    model_name = model_cfg["name"].lower()
+    pretrained = bool(model_cfg.get("pretrained", False))
 
     if model_name == "resnet18":
         return get_resnet18(
             num_classes=num_classes,
-            pretrained=pretrained
+            pretrained=pretrained,
         )
 
-    elif model_name == "vit_tiny":
+    if model_name == "vit_tiny":
         return get_vit_tiny(
             num_classes=num_classes,
-            pretrained=pretrained
+            pretrained=pretrained,
         )
 
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
+    raise ValueError(f"Unknown model: {model_name}")
 
 
+def create_optimizer(model: nn.Module, train_cfg: Dict) -> torch.optim.Optimizer:
+    opt_name = train_cfg["optimizer"].lower()
+    lr = float(train_cfg["learning_rate"])
+    wd = float(train_cfg.get("weight_decay", 0.0))
 
-def create_base_dataset(data_cfg: dict):
-    dataset_name = data_cfg.get("dataset_name", "flowers102")
-    root = data_cfg["root"]
-    download = data_cfg.get("download", True)
-
-    if dataset_name == "flowers102":
-        dataset = OxfordFlowers102(
-            root=root,
-            transform=None,
-            download=download
+    if opt_name == "sgd":
+        momentum = float(train_cfg.get("momentum", 0.9))
+        return torch.optim.SGD(
+            model.parameters(),
+            lr=lr,
+            momentum=momentum,
+            weight_decay=wd,
         )
 
-    elif dataset_name == "dtd":
-        dataset = DTD(
-            root=root,
-            transform=None,
-            download=download,
-            partition=data_cfg.get("partition", 1)
+    if opt_name == "adam":
+        return torch.optim.Adam(
+            model.parameters(),
+            lr=lr,
+            weight_decay=wd,
         )
 
-    elif dataset_name == "miniimagenet":
-        dataset = MiniImageNet(
-            root=root,
-            transform=None,
-            download=download,
-            url=data_cfg.get("url", None),
-            archive_name=data_cfg.get("archive_name", None),
-            remove_archive=data_cfg.get("remove_archive", False)
+    if opt_name == "adamw":
+        return torch.optim.AdamW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=wd,
         )
 
-    else:
-        raise ValueError(f"Unknown dataset_name: {dataset_name}")
-
-    return dataset
+    raise ValueError(f"Unsupported optimizer: {opt_name}")
 
 
+def create_scheduler(
+    optimizer: torch.optim.Optimizer,
+    train_cfg: Dict,
+):
+    sched_cfg = train_cfg.get("scheduler", {})
+    sched_type = sched_cfg.get("type", "none").lower()
+
+    if sched_type == "step_lr":
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=int(sched_cfg.get("step_size", 30)),
+            gamma=float(sched_cfg.get("gamma", 0.1)),
+        )
+
+    if sched_type == "reduce_on_plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            patience=int(sched_cfg.get("patience", 5)),
+            factor=float(sched_cfg.get("factor", 0.5)),
+        )
+
+    if sched_type == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=int(train_cfg["num_epochs"]),
+        )
+
+    if sched_type == "none":
+        return None
+
+    raise ValueError(f"Unsupported scheduler: {sched_type}")
 
 
-
-def create_datasets(data_cfg: dict):
+def seed_worker(worker_id: int):
     """
-    Создает train_dataset и val_dataset.
-
-    Поддерживаемые датасеты:
-    - flowers102
-    - dtd
-
-    Поддерживаемые режимы:
-    - original
-    - mixed_aug
+    Makes dataloader workers deterministic enough for common experiments.
     """
 
-    train_dataset_type = data_cfg.get("train_dataset_type", "original")
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
-    base_dataset = create_base_dataset(data_cfg)
 
-    base_dataset.set_transforms(
-        train_transform=train_transform,
-        val_transform=val_test_transform,
-        test_transform=val_test_transform
+def create_dataloaders(
+    train_dataset,
+    val_dataset,
+    data_cfg: Dict,
+    device: torch.device,
+    seed: int,
+):
+    batch_size = int(data_cfg["batch_size"])
+    num_workers = int(data_cfg.get("num_workers", 0))
+    pin_memory = device.type == "cuda"
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        worker_init_fn=seed_worker,
+        generator=generator,
     )
 
-    val_dataset = base_dataset.val_dataset
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        worker_init_fn=seed_worker,
+        generator=generator,
+    )
 
-    if train_dataset_type == "original":
-        train_dataset = base_dataset.train_dataset
+    return train_loader, val_loader
 
-    elif train_dataset_type == "mixed_aug":
-        aug_root = data_cfg["aug_root"]
-        aug_index_path = data_cfg["aug_index_path"]
-        alpha = data_cfg.get("alpha", 0.5)
 
-        train_dataset = MixedAugDataset(
-            root=aug_root,
-            index_path=aug_index_path,
-            transform=train_transform,
-            alpha=alpha
-        )
+def resolve_device(requested_device: str) -> torch.device:
+    requested_device = requested_device.lower()
 
-        original_train_len = len(base_dataset.train_dataset)
-        mixed_aug_len = len(train_dataset)
+    if requested_device == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
 
-        if mixed_aug_len != original_train_len:
-            raise ValueError(
-                "MixedAugDataset length must match original train dataset length "
-                "for fair comparison. "
-                f"Got mixed_aug_len={mixed_aug_len}, "
-                f"original_train_len={original_train_len}."
-            )
+    if requested_device == "mps" and torch.backends.mps.is_available():
+        return torch.device("mps")
 
-    else:
-        raise ValueError(f"Unknown train_dataset_type: {train_dataset_type}")
+    return torch.device("cpu")
 
-    return train_dataset, val_dataset
 
+def create_comet_logger(
+    log_cfg: Dict,
+    experiment_name: str,
+) -> CometLogger:
+    comet_cfg = log_cfg.get("comet", {})
+
+    api_key = comet_cfg.get("api_key", None)
+
+    api_key_env = comet_cfg.get("api_key_env", None)
+    if api_key_env is not None:
+        api_key = os.getenv(api_key_env)
+
+    return CometLogger(
+        project_name=comet_cfg.get("project_name"),
+        experiment_name=experiment_name,
+        api_key=api_key,
+        workspace=comet_cfg.get("workspace"),
+        disabled=bool(comet_cfg.get("disabled", False)),
+    )
+
+
+def log_experiment_parameters(
+    comet_logger: CometLogger,
+    config: Dict,
+    train_dataset,
+    val_dataset,
+    train_loader,
+    val_loader,
+):
+    data_cfg = config["data"]
+    model_cfg = config["model"]
+    train_cfg = config["training"]
+    scheduler_cfg = train_cfg.get("scheduler", {"type": "none"})
+    few_shot_cfg = data_cfg.get("few_shot", {})
+
+    train_batches_per_epoch = len(train_loader)
+    val_batches_per_epoch = len(val_loader)
+    total_optimizer_steps = train_batches_per_epoch * int(train_cfg["num_epochs"])
+
+    comet_logger.log_parameters({
+        "experiment_name": config["experiment_name"],
+        "seed": config["seed"],
+
+        "dataset_name": data_cfg.get("dataset_name", "flowers102"),
+        "num_classes": data_cfg["num_classes"],
+
+        "train_dataset_type": data_cfg.get("train_dataset_type", "original"),
+        "train_dataset_size": len(train_dataset),
+        "val_dataset_size": len(val_dataset),
+
+        "few_shot_enabled": few_shot_cfg.get("enabled", False),
+        "few_shot_k": few_shot_cfg.get("k", None),
+        "few_shot_seed": few_shot_cfg.get("seed", config["seed"]),
+        "few_shot_indices_path": few_shot_cfg.get("indices_path", None),
+
+        "aug_root": data_cfg.get("aug_root", None),
+        "aug_index_path": data_cfg.get("aug_index_path", None),
+        "num_aug_per_image": data_cfg.get("num_aug_per_image", None),
+        "alpha": data_cfg.get("alpha", None),
+
+        "batch_size": data_cfg["batch_size"],
+        "num_workers": data_cfg.get("num_workers", 0),
+        "train_batches_per_epoch": train_batches_per_epoch,
+        "val_batches_per_epoch": val_batches_per_epoch,
+        "total_optimizer_steps": total_optimizer_steps,
+
+        "model": model_cfg["name"],
+        "pretrained": model_cfg.get("pretrained", False),
+
+        "optimizer": train_cfg["optimizer"],
+        "learning_rate": train_cfg["learning_rate"],
+        "momentum": train_cfg.get("momentum", None),
+        "weight_decay": train_cfg.get("weight_decay", 0),
+
+        "scheduler": scheduler_cfg.get("type", "none"),
+        "scheduler_params": str(scheduler_cfg),
+        "num_epochs": train_cfg["num_epochs"],
+    })
+
+
+def print_experiment_summary(
+    config: Dict,
+    device: torch.device,
+    train_dataset,
+    val_dataset,
+    train_loader,
+    val_loader,
+):
+    data_cfg = config["data"]
+    few_shot_cfg = data_cfg.get("few_shot", {})
+
+    print("=" * 90)
+    print(f"Experiment: {config['experiment_name']}")
+    print(f"Device: {device}")
+    print(f"Dataset: {data_cfg.get('dataset_name', 'flowers102')}")
+    print(f"Train dataset type: {data_cfg.get('train_dataset_type', 'original')}")
+    print(f"Few-shot enabled: {few_shot_cfg.get('enabled', False)}")
+    print(f"Few-shot k: {few_shot_cfg.get('k', None)}")
+    print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Val dataset size: {len(val_dataset)}")
+    print(f"Train batches per epoch: {len(train_loader)}")
+    print(f"Val batches per epoch: {len(val_loader)}")
+    print("=" * 90)
 
 
 def main():
@@ -224,7 +277,7 @@ def main():
         "--config",
         type=str,
         required=True,
-        help="Path to YAML config file"
+        help="Path to YAML config file.",
     )
 
     args = parser.parse_args()
@@ -232,123 +285,71 @@ def main():
     config = load_config(args.config)
 
     experiment_name = config["experiment_name"]
-    seed = config["seed"]
+    seed = int(config["seed"])
 
-    # Важно: seed должен быть установлен ДО создания модели, датасетов и DataLoader.
     set_seed(seed)
 
-    requested_device = config.get("device", "cuda")
-    if requested_device == "cuda" and torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
+    device = resolve_device(config.get("device", "cuda"))
 
     data_cfg = config["data"]
-    num_classes = data_cfg["num_classes"]
-    batch_size = data_cfg["batch_size"]
-    num_workers = data_cfg.get("num_workers", 0)
-    pin_memory = True if device.type == "cuda" else False
-
     model_cfg = config["model"]
-    model = create_model(model_cfg, num_classes)
-
-    train_dataset, val_dataset = create_datasets(data_cfg)
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
-
     train_cfg = config["training"]
+    log_cfg = config["logging"]
+
+    num_classes = int(data_cfg["num_classes"])
+
+    train_dataset, val_dataset = create_datasets(
+        data_cfg=data_cfg,
+        seed=seed,
+    )
+
+    train_loader, val_loader = create_dataloaders(
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        data_cfg=data_cfg,
+        device=device,
+        seed=seed,
+    )
+
+    model = create_model(
+        model_cfg=model_cfg,
+        num_classes=num_classes,
+    )
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = create_optimizer(model, train_cfg)
-    scheduler = create_scheduler(optimizer, train_cfg)
 
-    log_cfg = config["logging"]
-    comet_cfg = log_cfg.get("comet", {})
-
-    comet_logger = CometLogger(
-        project_name=comet_cfg.get("project_name"),
-        experiment_name=experiment_name,
-        api_key=comet_cfg.get("api_key"),
-        workspace=comet_cfg.get("workspace"),
-        disabled=comet_cfg.get("disabled", False)
+    optimizer = create_optimizer(
+        model=model,
+        train_cfg=train_cfg,
     )
 
-    scheduler_cfg = train_cfg.get("scheduler", {"type": "none"})
+    scheduler = create_scheduler(
+        optimizer=optimizer,
+        train_cfg=train_cfg,
+    )
 
-    train_dataset_size = len(train_dataset)
-    val_dataset_size = len(val_dataset)
-    train_batches_per_epoch = len(train_loader)
-    val_batches_per_epoch = len(val_loader)
-    total_optimizer_steps = train_batches_per_epoch * train_cfg["num_epochs"]
+    comet_logger = create_comet_logger(
+        log_cfg=log_cfg,
+        experiment_name=experiment_name,
+    )
 
-    print("=" * 80)
-    print(f"Experiment: {experiment_name}")
-    print(f"Device: {device}")
-    print(f"Train dataset type: {data_cfg.get('train_dataset_type', 'original')}")
-    print(f"Train dataset size: {train_dataset_size}")
-    print(f"Val dataset size: {val_dataset_size}")
-    print(f"Train batches per epoch: {train_batches_per_epoch}")
-    print(f"Total optimizer steps: {total_optimizer_steps}")
-    print("=" * 80)
+    print_experiment_summary(
+        config=config,
+        device=device,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        train_loader=train_loader,
+        val_loader=val_loader,
+    )
 
-    comet_logger.log_parameters({
-        "dataset_name": data_cfg.get("dataset_name", "flowers102"),
-        "partition": data_cfg.get("partition", None),
-
-        "model": model_cfg["name"],
-        "pretrained": model_cfg.get("pretrained", False),
-        "num_classes": num_classes,
-
-        "train_dataset_type": data_cfg.get("train_dataset_type", "original"),
-        "num_aug_per_image": data_cfg.get("num_aug_per_image", 0),
-        "alpha": data_cfg.get("alpha", None),
-        "aug_root": data_cfg.get("aug_root", None),
-        "aug_index_path": data_cfg.get("aug_index_path", None),
-
-        "train_dataset_size": train_dataset_size,
-        "val_dataset_size": val_dataset_size,
-        "train_batches_per_epoch": train_batches_per_epoch,
-        "val_batches_per_epoch": val_batches_per_epoch,
-        "total_optimizer_steps": total_optimizer_steps,
-
-        "batch_size": batch_size,
-        "optimizer": train_cfg["optimizer"],
-        "learning_rate": train_cfg["learning_rate"],
-        "momentum": train_cfg.get("momentum", None),
-        "weight_decay": train_cfg.get("weight_decay", 0),
-
-        "scheduler": scheduler_cfg.get("type", "none"),
-        "scheduler_params": str(scheduler_cfg),
-
-        "seed": seed,
-        "experiment_name": experiment_name,
-    })
-
-
-    if data_cfg.get("train_dataset_type", "original") == "mixed_aug":
-        comet_logger.log_parameters({
-            "aug_root": data_cfg.get("aug_root"),
-            "aug_index_path": data_cfg.get("aug_index_path"),
-            "alpha": data_cfg.get("alpha", 0.5),
-            "include_original_in_aug_pool": data_cfg.get(
-                "include_original_in_aug_pool",
-                False
-            )
-        })
+    log_experiment_parameters(
+        comet_logger=comet_logger,
+        config=config,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        train_loader=train_loader,
+        val_loader=val_loader,
+    )
 
     trainer = Trainer(
         model=model,
@@ -359,21 +360,22 @@ def main():
         scheduler=scheduler,
         device=device,
         experiment_name=experiment_name,
-        num_epochs=train_cfg["num_epochs"],
+        num_epochs=int(train_cfg["num_epochs"]),
         log_dir=log_cfg["log_dir"],
         comet_logger=comet_logger,
         seed=seed,
-        log_batch_loss=log_cfg.get("log_batch_loss", False),
-        config=config
+        log_batch_loss=bool(log_cfg.get("log_batch_loss", False)),
+        config=config,
     )
 
-    # Сохраняем копию конфига в папку эксперимента.
+    os.makedirs(trainer.local_logger.experiment_dir, exist_ok=True)
+
     shutil.copy(
         args.config,
         os.path.join(
             trainer.local_logger.experiment_dir,
-            f"{experiment_name}_config.yaml"
-        )
+            f"{experiment_name}_config.yaml",
+        ),
     )
 
     trainer.fit()

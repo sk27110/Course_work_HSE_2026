@@ -1,0 +1,33 @@
+# configs/generate_miniimagenet_5shot_genmix_aug1.yaml
+
+experiment_name: generate_miniimagenet_5shot_genmix_aug1
+seed: 42
+
+data:
+  dataset_name: miniimagenet
+
+  root: data/miniimagenet
+  download: true
+
+  few_shot:
+    enabled: true
+    k: 5
+    seed: 42
+    indices_path: fewshot_indices/miniimagenet_5shot_seed42.json
+
+  num_classes: 100
+
+augmentation:
+  method: genmix
+  device: cuda
+
+  save_dir: augmented_miniimagenet_5shot_seed42_genmix_aug1
+  num_aug: 1
+  max_tries: 10
+  save_original: true
+
+  lambda_fractal: 0.2
+  blend_width: 20
+  max_generation_attempts: 5
+
+  kaggle_dataset: tomandjerry2005/fractal-mixing-set-pixmix

@@ -1,6 +1,7 @@
 import random
 import os
 from typing import List, Optional
+import numpy as np
 
 import torch
 import torch.nn.functional as F
@@ -127,19 +128,29 @@ class GenMixAugmentor(BaseAugmentationMethod):
     # -----------------------------
 
     def _get_features(self, img):
+        # 1. Приводим к тензору [C, H, W], обеспечивая RGB
         if isinstance(img, Image.Image):
-            img = T.ToTensor()(img)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            img = T.ToTensor()(img)          # [3, H, W]
+        elif isinstance(img, np.ndarray):
+            img = T.ToTensor()(img)          # [C, H, W] (если C=1 – потом повторим)
+        # 2. Если тензор имеет 2 измерения (H,W) – добавим канал
+        if img.dim() == 2:
+            img = img.unsqueeze(0)           # [1, H, W]
+        # 3. Если 1 канал – повторяем до 3 каналов
+        if img.shape[0] == 1:
+            img = img.repeat(3, 1, 1)        # [3, H, W]
+        # 4. Добавляем batch-измерение
         if img.dim() == 3:
-            img = img.unsqueeze(0)
-
+            img = img.unsqueeze(0)           # [1, 3, H, W]
+        # 5. Дальше как было
         img = T.Resize(256)(img)
         img = T.CenterCrop(224)(img)
         img = T.Normalize(mean=(0.485, 0.456, 0.406),
-                          std=(0.229, 0.224, 0.225))(img)
-
+                        std=(0.229, 0.224, 0.225))(img)
         with torch.no_grad():
             feats = self.dino.forward_features(img.to(self.device))["x_norm_clstoken"]
-
         return F.normalize(feats.squeeze(0), dim=0)
 
     def prepare(self, dataset: Dataset, num_samples=200):
@@ -169,57 +180,52 @@ class GenMixAugmentor(BaseAugmentationMethod):
         return sim.item() >= threshold
 
     def _create_mask(self, h: int, w: int, mask_type: str = 'vertical', flip: bool = False) -> torch.Tensor:
-        """
-        Создаёт маску для бесшовного смешивания (Seamless Concatenation).
-
-        Параметры:
-            h, w    – размеры изображения (высота, ширина).
-            mask_type – 'vertical' (левая/правая части) или 'horizontal' (верх/низ).
-            flip    – если True, маска инвертируется (меняются местами источник и генерация).
-
-        Возвращает:
-            Тензор маски формы (1, h, w) на self.device.
-        """
-        bw = self.blend_width                     # ширина градиентного перехода
+        # Ограничиваем blend_width половиной минимальной стороны
+        bw = min(self.blend_width, w // 2, h // 2)
         mask = torch.zeros((h, w), device=self.device)
 
         if mask_type == 'vertical':
-            # Левая часть = 0 (оригинал), правая = 1 (генерация)
             mid = w // 2
-            mask[:, :mid - bw] = 0.0
-            mask[:, mid + bw:] = 1.0
-
-            # Градиентная полоса перехода
-            blend = torch.linspace(0.0, 1.0, 2 * bw, device=self.device)
-            mask[:, mid - bw : mid + bw] = blend.unsqueeze(0)   # (2*bw) -> (1, 2*bw)
+            left = max(0, mid - bw)
+            right = min(w, mid + bw)
+            mask[:, :left] = 0.0
+            mask[:, right:] = 1.0
+            if right > left:
+                blend = torch.linspace(0.0, 1.0, right - left, device=self.device)
+                mask[:, left:right] = blend.unsqueeze(0)
 
         elif mask_type == 'horizontal':
-            # Верх = 0, низ = 1
             mid = h // 2
-            mask[:mid - bw, :] = 0.0
-            mask[mid + bw:, :] = 1.0
-
-            blend = torch.linspace(0.0, 1.0, 2 * bw, device=self.device)
-            mask[mid - bw : mid + bw, :] = blend.unsqueeze(1)   # (2*bw) -> (2*bw, 1)
+            top = max(0, mid - bw)
+            bottom = min(h, mid + bw)
+            mask[:top, :] = 0.0
+            mask[bottom:, :] = 1.0
+            if bottom > top:
+                blend = torch.linspace(0.0, 1.0, bottom - top, device=self.device)
+                mask[top:bottom, :] = blend.unsqueeze(1)
 
         else:
-            raise ValueError(f"Unknown mask_type: {mask_type}. Choose 'vertical' or 'horizontal'.")
+            raise ValueError(f"Unknown mask_type: {mask_type}")
 
-        # Инверсия маски для перестановки частей (flipped version)
         if flip:
             mask = 1.0 - mask
 
-        # Добавляем размерность канала для удобного поэлементного умножения
-        return mask.unsqueeze(0)   # (1, h, w)
+        return mask.unsqueeze(0)  # (1, h, w)
     # -----------------------------
     # Главный метод augment — теперь с ленивой загрузкой
     # -----------------------------
     def augment(self, image: Image.Image):
         """Генерирует + проверяет DINO. При отсеивании — автоматически перегенерирует."""
+
+        if not isinstance(image, Image.Image):
+            image = T.ToPILImage()(image)
+
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
         for attempt in range(1, self.max_generation_attempts + 1):
             prompt = random.choice(self.prompts)
 
-            # Генерация
             generated = self.pipe(
                 prompt,
                 image=image,
@@ -228,37 +234,43 @@ class GenMixAugmentor(BaseAugmentationMethod):
                 guidance_scale=4.0
             ).images[0]
 
-            # Приводим к тензорам одинакового размера
             img_t = T.ToTensor()(image).to(self.device)
             gen_t = T.ToTensor()(generated).to(self.device)
 
             h, w = img_t.shape[1:]
+
             gen_t = torch.nn.functional.interpolate(
-                gen_t.unsqueeze(0), size=(h, w), mode='bilinear'
+                gen_t.unsqueeze(0),
+                size=(h, w),
+                mode="bilinear",
+                align_corners=False
             ).squeeze(0)
 
-            # Проверка верности через DINOv2
             if self.is_faithful(img_t, gen_t):
-                # Успех! Идём дальше — делаем hybrid + fractal
-                # Случайный выбор из 4 вариантов согласно статье
-                mask_type = random.choice(['vertical', 'horizontal'])
+                mask_type = random.choice(["vertical", "horizontal"])
                 flip = random.choice([True, False])
                 mask = self._create_mask(h, w, mask_type=mask_type, flip=flip)
-                
+
                 hybrid = gen_t * mask + img_t * (1 - mask)
 
-                # Ленивая загрузка фрактала
                 fractal_path = random.choice(self.fractal_paths)
                 fractal_img = Image.open(fractal_path).convert("RGB")
-                fractal = T.ToTensor()(fractal_img.resize((w, h))).to(self.device)
+                fractal_img = fractal_img.resize((w, h))
+                fractal = T.ToTensor()(fractal_img).to(self.device)
 
                 out = (1 - self.lambda_fractal) * hybrid + self.lambda_fractal * fractal
 
-                return T.ToPILImage()(out.clamp(0, 1))
+                return T.ToPILImage()(out.detach().cpu().clamp(0, 1))
 
             else:
-                print(f"[GenMix] Attempt {attempt}/{self.max_generation_attempts} failed DINO check. Regenerating...")
+                print(
+                    f"[GenMix] Attempt {attempt}/{self.max_generation_attempts} "
+                    f"failed DINO check. Regenerating..."
+                )
 
-        # Если все попытки провалились — возвращаем оригинал (чтобы не ломать пайплайн)
-        print(f"[GenMix] All {self.max_generation_attempts} attempts failed. Returning original image.")
+        print(
+            f"[GenMix] All {self.max_generation_attempts} attempts failed. "
+            f"Returning original image."
+        )
+
         return image

@@ -1,0 +1,39 @@
+# configs/generate_miniimagenet_5shot_aga_aug1.yaml
+
+experiment_name: generate_miniimagenet_5shot_aga_aug1
+seed: 42
+
+data:
+  dataset_name: miniimagenet
+
+  root: data/miniimagenet
+  download: true
+
+  few_shot:
+    enabled: true
+    k: 5
+    seed: 42
+    indices_path: fewshot_indices/miniimagenet_5shot_seed42.json
+
+  num_classes: 100
+
+augmentation:
+  method: aga
+  device: cuda
+
+  save_dir: augmented_miniimagenet_5shot_seed42_aga_aug1
+  num_aug: 1
+  max_tries: 3
+  save_original: true
+
+  phi3_model_name: microsoft/Phi-3-mini-4k-instruct
+  sd_model_name: runwayml/stable-diffusion-v1-5
+  dino_model_name: IDEA-Research/grounding-dino-base
+  sam2_model_name: facebook/sam2-hiera-large
+
+  box_threshold: 0.25
+  text_threshold: 0.25
+  guidance_scale: 7.5
+  num_inference_steps: 50
+  sd_torch_dtype: float16
+  load_models: true

@@ -1,4 +1,4 @@
-experiment_name: miniimagenet_resnet18
+experiment_name: miniimagenet_resnet18_5shot_original
 seed: 42
 device: cuda
 
@@ -9,11 +9,11 @@ data:
   root: data/miniimagenet
   download: true
 
-  # Сюда нужно поставить прямую ссылку на архив.
-  # Архив должен после распаковки давать train/val/test.
-  url: "https://doi.org/10.6084/m9.figshare.26340226"
-  archive_name: miniimagenet.zip
-  remove_archive: false
+  few_shot:
+    enabled: true
+    k: 5
+    seed: 42
+    save_indices_path: fewshot_indices/miniimagenet_5shot_seed42.json
 
   num_classes: 100
   batch_size: 32
@@ -40,7 +40,7 @@ logging:
   log_batch_loss: false
 
   comet:
-    project_name: miniImageNet-augmentation-comparison
+    project_name: MiniImageNet-fewshot-augmentation-comparison
     workspace: null
-    api_key: null
-    disabled: false
+    api_key_env: COMET_API_KEY
+    disabled: true
