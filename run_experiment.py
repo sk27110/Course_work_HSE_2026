@@ -12,7 +12,7 @@ import torch.nn as nn
 import yaml
 from torch.utils.data import DataLoader
 
-from data_utils.dataset_factory import create_datasets
+from data_utils.experiment_datasets import create_experiment_datasets
 from training.logger import CometLogger
 from training.models import get_resnet18, get_vit_tiny
 from training.trainer import Trainer, set_seed
@@ -298,7 +298,7 @@ def main():
 
     num_classes = int(data_cfg["num_classes"])
 
-    train_dataset, val_dataset = create_datasets(
+    train_dataset, val_dataset = create_experiment_datasets(
         data_cfg=data_cfg,
         seed=seed,
     )

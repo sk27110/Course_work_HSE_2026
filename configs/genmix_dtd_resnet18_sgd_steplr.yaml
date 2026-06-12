@@ -47,5 +47,5 @@ logging:
   comet:
     project_name: DTD-augmentation-comparison
     workspace: null
-    api_key: MbL2psOHT82Uc7ML5Cd7TSvmR
+    api_key_env: COMET_API_KEY
     disabled: false

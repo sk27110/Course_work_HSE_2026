@@ -51,6 +51,11 @@ class DTD:
             download=download
         )
 
+        self.class_names = list(getattr(self.train_dataset, "classes", []))
+        self.train_dataset.class_names = self.class_names
+        self.val_dataset.class_names = self.class_names
+        self.test_dataset.class_names = self.class_names
+
     def set_transforms(
         self,
         train_transform=None,

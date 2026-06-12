@@ -6,7 +6,7 @@ from typing import Dict
 import yaml
 
 from augmentlib.method_factory import create_augmentation_provider
-from data_utils.dataset_factory import create_raw_train_dataset_for_generation
+from data_utils.few_shot_dataset import create_raw_source_train_dataset
 from data_utils.offline_aug_generator import OfflineAugmentedDatasetGenerator
 from training.trainer import set_seed
 
@@ -35,7 +35,7 @@ def main():
     data_cfg = config["data"]
     aug_cfg = config["augmentation"]
 
-    dataset = create_raw_train_dataset_for_generation(
+    dataset = create_raw_source_train_dataset(
         data_cfg=data_cfg,
         seed=seed,
     )
